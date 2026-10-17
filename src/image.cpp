@@ -13,6 +13,9 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
+void RotateBuffer(const std::vector<BYTE>& src, int w, int h, bool clockwise, std::vector<BYTE>& dst);
+void MirrorBuffer(std::vector<BYTE>& buf, int w, int h, bool horizontal);
+
 std::wstring FormatName(const GUID& g) {
     if (IsEqualGUID(g, GUID_ContainerFormatPng))       return L"PNG";
     if (IsEqualGUID(g, GUID_ContainerFormatJpeg))      return L"JPEG";
@@ -25,19 +28,6 @@ std::wstring FormatName(const GUID& g) {
     if (IsEqualGUID(g, GUID_ContainerFormatWebp))      return L"WebP";
     if (IsEqualGUID(g, GUID_ContainerFormatDds))       return L"DDS";
     return L"image";
-}
-
-bool TransformForOrientation(UINT o, WICBitmapTransformOptions* t) {
-    switch (o) {
-        case 2: *t = WICBitmapTransformFlipHorizontal; return true;
-        case 3: *t = WICBitmapTransformRotate180; return true;
-        case 4: *t = WICBitmapTransformFlipVertical; return true;
-        case 5: *t = (WICBitmapTransformOptions)(WICBitmapTransformRotate90 | WICBitmapTransformFlipHorizontal); return true;
-        case 6: *t = WICBitmapTransformRotate90; return true;
-        case 7: *t = (WICBitmapTransformOptions)(WICBitmapTransformRotate270 | WICBitmapTransformFlipHorizontal); return true;
-        case 8: *t = WICBitmapTransformRotate270; return true;
-        default: return false;
-    }
 }
 
 UINT ReadOrientation(IWICBitmapFrameDecode* frame) {
@@ -220,6 +210,32 @@ bool LoadGifAnimation(IWICImagingFactory* factory, IWICBitmapDecoder* decoder, I
     return true;
 }
 
+// Apply the EXIF orientation ourselves instead of chaining IWICBitmapFlipRotator
+// with the format converter: for large images that chain is pathologically slow
+// (30 MP + Rotate90 took minutes), while decoding unrotated takes ~120 ms and
+// rotating in memory takes ~100 ms.
+void ApplyExifOrientation(UINT o, std::vector<BYTE>& buf, int& w, int& h) {
+    if (o < 2 || o > 8 || w <= 0 || h <= 0) return;
+
+    auto rot90 = [&](bool clockwise) {
+        std::vector<BYTE> out;
+        RotateBuffer(buf, w, h, clockwise, out);
+        buf.swap(out);
+        std::swap(w, h);
+    };
+
+    switch (o) {
+        case 2: MirrorBuffer(buf, w, h, true); break;
+        case 3: rot90(true); rot90(true); break;
+        case 4: MirrorBuffer(buf, w, h, false); break;
+        case 5: rot90(true); MirrorBuffer(buf, w, h, true); break;
+        case 6: rot90(true); break;
+        case 7: rot90(false); MirrorBuffer(buf, w, h, true); break;
+        case 8: rot90(false); break;
+        default: break;
+    }
+}
+
 } // namespace
 
 void ImageDoc::Clear() {
@@ -336,22 +352,11 @@ bool ImageDoc::Load(const std::wstring& file, std::wstring* err, int rawMode) {
         if (SUCCEEDED(hr)) {
             orientation = ReadOrientation(frame.Get());
             ComPtr<IWICBitmapSource> src = frame;
-            if (orientation >= 2 && orientation <= 8) {
-                WICBitmapTransformOptions opt{};
-                if (TransformForOrientation(orientation, &opt)) {
-                    ComPtr<IWICBitmapFlipRotator> rot;
-                    if (SUCCEEDED(factory->CreateBitmapFlipRotator(&rot)) &&
-                        SUCCEEDED(rot->Initialize(frame.Get(), opt))) {
-                        src = rot;
-                    } else {
-                        orientation = 1;
-                    }
-                } else {
-                    orientation = 1;
-                }
-            }
             std::wstring tmp;
             if (WicSourceToBgra(factory.Get(), src.Get(), bgra, width, height, &tmp)) {
+                if (orientation >= 2 && orientation <= 8) {
+                    ApplyExifOrientation(orientation, bgra, width, height);
+                }
                 if (raw) note = L"full RAW decode";
                 ScanAlpha();
                 path = file;
