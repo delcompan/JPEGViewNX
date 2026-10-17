@@ -40,4 +40,4 @@ bin\JPEGViewNX.exe --unassociate-all    :: 取消全部关联
   首次设为默认需要在系统设置里确认一次；此后双击图片即可直接打开。
 - RAW 默认优先读取内嵌 JPEG 预览（快）；安装 Microsoft Raw Image Extension 后
   可解码全尺寸 RAW（`RawMode=full`）。
-
+- 参考项目：https://github.com/sylikc/jpegview
