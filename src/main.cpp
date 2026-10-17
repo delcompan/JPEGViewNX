@@ -183,6 +183,18 @@ int NaturalCompare(const std::wstring& a, const std::wstring& b) {
     return 0;
 }
 
+
+// Comparison key for paths: separators and case differ between the command line
+// (forward slashes) and directory_iterator (backslashes).
+std::wstring PathKey(const std::wstring& s) {
+    std::wstring out = s;
+    for (wchar_t& c : out) {
+        if (c == L'/') c = L'\\';
+        else c = (wchar_t)towlower(c);
+    }
+    return out;
+}
+
 std::wstring FileNameOf(const std::wstring& path) {
     size_t p = path.find_last_of(L"\\/");
     return p == std::wstring::npos ? path : path.substr(p + 1);
@@ -678,6 +690,11 @@ void ScanFolder(Viewer& v, const std::wstring& file) {
     namespace fs = std::filesystem;
     std::error_code ec;
     fs::path p(file);
+    if (p.is_relative()) {
+        std::error_code ae;
+        fs::path abs = fs::absolute(p, ae);
+        if (!ae) p = abs;
+    }
     v.folder = p.parent_path().wstring();
     v.files.clear();
 
@@ -693,25 +710,31 @@ void ScanFolder(Viewer& v, const std::wstring& file) {
         }
     }
 
-    if (v.files.empty()) {
-        v.files.push_back(file);
-        v.folder = p.parent_path().wstring();
-    }
+    const std::wstring targetKey = PathKey(p.wstring());
+    const std::wstring targetName = PathKey(p.filename().wstring());
+
+    auto findCurrent = [&]() -> int {
+        if (!targetKey.empty()) {
+            for (size_t i = 0; i < v.files.size(); ++i)
+                if (PathKey(v.files[i]) == targetKey) return (int)i;
+        }
+        for (size_t i = 0; i < v.files.size(); ++i)
+            if (PathKey(fs::path(v.files[i]).filename().wstring()) == targetName) return (int)i;
+        return -1;
+    };
+
+    if (v.files.empty()) v.files.push_back(p.wstring());
     std::sort(v.files.begin(), v.files.end(),
               [](const std::wstring& a, const std::wstring& b) { return NaturalCompare(a, b) < 0; });
 
-    v.fileIndex = -1;
-    for (size_t i = 0; i < v.files.size(); ++i) {
-        if (_wcsicmp(v.files[i].c_str(), file.c_str()) == 0) { v.fileIndex = (int)i; break; }
-    }
+    v.fileIndex = findCurrent();
     if (v.fileIndex < 0) {
-        v.files.push_back(file);
+        v.files.push_back(p.wstring());
         std::sort(v.files.begin(), v.files.end(),
                   [](const std::wstring& a, const std::wstring& b) { return NaturalCompare(a, b) < 0; });
-        for (size_t i = 0; i < v.files.size(); ++i) {
-            if (_wcsicmp(v.files[i].c_str(), file.c_str()) == 0) { v.fileIndex = (int)i; break; }
-        }
+        v.fileIndex = findCurrent();
     }
+    if (v.fileIndex < 0) v.fileIndex = 0;
 }
 
 constexpr UINT_PTR kAnimTimer = 1;
